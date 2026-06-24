@@ -42,7 +42,8 @@ public:
 private:
     std::map<uint64_t, std::vector<FileInfo> > group_files_by_size(const std::vector<FileInfo>& files) const;
     std::vector<FileInfo> collect_hash_candidates(const std::map<uint64_t, std::vector<FileInfo>>& filesBySize) const;
-    std::vector<HashResult> hash_candidates(const std::vector<FileInfo>& candidates) const;
+    std::vector<std::vector<FileInfo> > create_batches(const std::vector<FileInfo>& candidates, size_t batchSize) const;
+    std::vector<HashResult> hash_candidates(const std::vector<std::vector<FileInfo> >& batches) const;
     std::map<std::pair<uint64_t, uint64_t>, std::vector<std::string> > group_by_hash_and_size(const std::vector<HashResult>& results) const;
     std::vector<DuplicateGroup> extract_duplicate_groups(const std::map<std::pair<uint64_t, uint64_t>, std::vector<std::string> >& buckets) const;
     DuplicateReport assemble_report(const FileWalkResult& walkResult, const std::vector<HashResult>& hashResults, const std::vector<DuplicateGroup>& duplicateGroups) const;

@@ -12,11 +12,37 @@ DuplicateReport DuplicateFinder::find_duplicates(const std::string& rootPath) co
     const FileWalkResult walkResult = fileWalker_.collect_files(rootPath);
     const std::map<uint64_t, std::vector<FileInfo> > filesBySize = group_files_by_size(walkResult.files);
     const std::vector<FileInfo> candidates = collect_hash_candidates(filesBySize);
-    const std::vector<HashResult> hashResults = hash_candidates(candidates);
+
+    const size_t BATCH_SIZE = 64;
+    const std::vector<std::vector<FileInfo> > batches = create_batches(candidates, BATCH_SIZE);
+
+    const std::vector<HashResult> hashResults = hash_candidates(batches);
     const std::map<std::pair<uint64_t, uint64_t>, std::vector<std::string> > buckets = group_by_hash_and_size(hashResults);
     const std::vector<DuplicateGroup> duplicateGroups = extract_duplicate_groups(buckets);
 
-    return assemble_report(walkResult, hashResults, duplicateGroups);
+    DuplicateReport report = assemble_report(walkResult, hashResults, duplicateGroups);
+    report.hashTasks = batches.size();
+    return report;
+}
+
+std::vector<std::vector<FileInfo> > DuplicateFinder::create_batches(const std::vector<FileInfo>& candidates, size_t batchSize) const {
+    std::vector<std::vector<FileInfo> > batches;
+    if (batchSize == 0 || candidates.empty()) {
+        return batches;
+    }
+
+    const size_t numBatches = (candidates.size() + batchSize - 1) / batchSize;
+    batches.reserve(numBatches);
+
+    for (size_t i = 0; i < candidates.size(); i += batchSize) {
+        std::vector<FileInfo> batch;
+        batch.reserve(batchSize);
+        for (size_t j = i; j < i + batchSize && j < candidates.size(); ++j) {
+            batch.push_back(candidates[j]);
+        }
+        batches.push_back(batch);
+    }
+    return batches;
 }
 
 std::map<uint64_t, std::vector<FileInfo> > DuplicateFinder::group_files_by_size(const std::vector<FileInfo>& files) const {
@@ -42,21 +68,33 @@ std::vector<FileInfo> DuplicateFinder::collect_hash_candidates(const std::map<ui
     return candidates;
 }
 
-std::vector<HashResult> DuplicateFinder::hash_candidates(const std::vector<FileInfo>& candidates) const {
-    std::vector<std::future<HashResult> > futures;
-    futures.reserve(candidates.size());
+std::vector<HashResult> DuplicateFinder::hash_candidates(const std::vector<std::vector<FileInfo> >& batches) const {
+    std::vector<std::future<std::vector<HashResult> > > futures;
+    futures.reserve(batches.size());
 
-    for (std::vector<FileInfo>::const_iterator it = candidates.begin(); it != candidates.end(); ++it) {
-        const FileInfo file = *it;
-        futures.push_back(pool_.submit_task([this, file]() {
-            return hasher_.hash_file(file);
-            }));
+    for (std::vector<std::vector<FileInfo> >::const_iterator it = batches.begin(); it != batches.end(); ++it) {
+        const std::vector<FileInfo> batch = *it;
+        futures.push_back(pool_.submit_task([this, batch]() {
+            std::vector<HashResult> batchResults;
+            batchResults.reserve(batch.size());
+            for (std::vector<FileInfo>::const_iterator fileIt = batch.begin(); fileIt != batch.end(); ++fileIt) {
+                batchResults.push_back(hasher_.hash_file(*fileIt));
+            }
+            return batchResults;
+        }));
     }
 
     std::vector<HashResult> results;
-    results.reserve(futures.size());
-    for (std::vector<std::future<HashResult> >::iterator it = futures.begin(); it != futures.end(); ++it) {
-        results.push_back(it->get());
+    // Pre-allocate approximate capacity to avoid reallocations
+    size_t totalCandidates = 0;
+    for (std::vector<std::vector<FileInfo> >::const_iterator it = batches.begin(); it != batches.end(); ++it) {
+        totalCandidates += it->size();
+    }
+    results.reserve(totalCandidates);
+
+    for (std::vector<std::future<std::vector<HashResult> > >::iterator it = futures.begin(); it != futures.end(); ++it) {
+        std::vector<HashResult> batchResults = it->get();
+        results.insert(results.end(), batchResults.begin(), batchResults.end());
     }
     return results;
 }
@@ -98,7 +136,8 @@ DuplicateReport DuplicateFinder::assemble_report(const FileWalkResult& walkResul
     for (std::vector<HashResult>::const_iterator it = hashResults.begin(); it != hashResults.end(); ++it) {
         if (!it->ok) {
             report.errors.push_back(it->error);
-        } else {
+        }
+        else {
             ++report.fullHashedFiles;
         }
     }
