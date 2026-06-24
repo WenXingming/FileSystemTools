@@ -45,3 +45,69 @@ HashResult Hasher::hash_file(const FileInfo& file) const {
 
     return HashResult{ true, file, hash.value(), FileError{} };
 }
+
+HashResult Hasher::hash_partial_file(const FileInfo& file, size_t maxBytes) const {
+    std::ifstream input(file.path.c_str(), std::ios::binary);
+    if (!input.is_open()) {
+        return HashResult{ false, file, 0, FileError{ FileError::Phase::HASH, file.path, "failed to open file: " + std::string(std::strerror(errno)) } };
+    }
+
+    Fnv1aHash hash;
+    std::unique_ptr<char[]> buffer(new char[bufferSize_]);
+    
+    if (file.size <= maxBytes) {
+        // 场景 A：文件不够大，从头读到尾（作为局部哈希）
+        size_t totalRead = 0;
+        while (input && totalRead < maxBytes) {
+            size_t toRead = std::min(bufferSize_, maxBytes - totalRead);
+            input.read(buffer.get(), static_cast<std::streamsize>(toRead));
+            const std::streamsize bytesRead = input.gcount();
+            if (bytesRead > 0) {
+                hash.update(buffer.get(), static_cast<size_t>(bytesRead));
+                totalRead += bytesRead;
+            }
+        }
+    } else {
+        // 场景 B：文件足够大，执行“首尾混合（Head+Tail）”抽样哈希
+        const size_t chunkSize = maxBytes / 2;
+
+        // 1. 读取头部块
+        size_t headRead = 0;
+        while (input && headRead < chunkSize) {
+            size_t toRead = std::min(bufferSize_, chunkSize - headRead);
+            input.read(buffer.get(), static_cast<std::streamsize>(toRead));
+            const std::streamsize bytesRead = input.gcount();
+            if (bytesRead > 0) {
+                hash.update(buffer.get(), static_cast<size_t>(bytesRead));
+                headRead += bytesRead;
+            }
+        }
+
+        if (input.bad()) {
+            return HashResult{ false, file, 0, FileError{ FileError::Phase::HASH, file.path, "failed to read file head: " + std::string(std::strerror(errno)) } };
+        }
+
+        // 2. 清除 EOF 等状态，精准跳转到尾部块的起始点
+        input.clear();
+        input.seekg(file.size - chunkSize, std::ios::beg);
+
+        // 3. 读取尾部块
+        size_t tailRead = 0;
+        while (input && tailRead < chunkSize) {
+            size_t toRead = std::min(bufferSize_, chunkSize - tailRead);
+            input.read(buffer.get(), static_cast<std::streamsize>(toRead));
+            const std::streamsize bytesRead = input.gcount();
+            if (bytesRead > 0) {
+                hash.update(buffer.get(), static_cast<size_t>(bytesRead));
+                tailRead += bytesRead;
+            }
+        }
+    }
+
+    // 检测是否有底层的严重读取错误 (例如磁盘损坏)
+    if (input.bad()) {
+        return HashResult{ false, file, 0, FileError{ FileError::Phase::HASH, file.path, "failed to read file: " + std::string(std::strerror(errno)) } };
+    }
+
+    return HashResult{ true, file, hash.value(), FileError{} };
+}
