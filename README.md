@@ -49,15 +49,30 @@ FileWalker -> size grouping -> ThreadPool parallel hash -> DuplicateFinder repor
 
 ## Benchmark
 
-Benchmark 默认不参与普通构建。需要显式开启：
+Benchmark 默认不参与普通构建。需要显式开启（推荐使用 `Release` 模式）：
 
 ```bash
 cmake -S . -B build-bench -DBUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build-bench
+```
+
+直接在终端运行并查看结果：
+
+```bash
 ./build-bench/benchmark/dedup/dedupBenchmark --benchmark_min_time=1.0 --benchmark_repetitions=3
 ```
 
+**导出 JSON 测试报告**
+
+你可以通过附加参数将结果导出为 JSON 文件，用于数据留存或可视化分析：
+
+```bash
+mkdir -p benchmark/dedup/results
+./build-bench/benchmark/dedup/dedupBenchmark --benchmark_min_time=1.0 --benchmark_repetitions=3 --benchmark_format=json --benchmark_out=benchmark/dedup/results/latest.json
+```
+
 详细基线方法和结果记录模板见 [docs/dedup_benchmark.md](docs/dedup_benchmark.md)。
+关于多线程架构提速与 I/O 瓶颈的综合分析报告见 [docs/benchmark_report.md](docs/benchmark_report.md)。
 
 ## 当前边界
 
