@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <vector>
 
@@ -12,29 +13,34 @@ Hasher::Hasher(size_t bufferSize)
     : bufferSize_(bufferSize == 0 ? 1 : bufferSize) {
 }
 
+// NOTE: Parallel Called
 HashResult Hasher::hash_file(const FileInfo& file) const {
     // 1. 以二进制模式打开文件 (非常重要，防止 Windows 下的 \r\n 转换破坏文件数据)
     std::ifstream input(file.path.c_str(), std::ios::binary);
     if (!input.is_open()) {
-        return HashResult{ false, file, 0, FileError{ FileError::Phase::HASH, file.path, "failed to open file." } };
+        return HashResult{ false, file, 0, FileError{ FileError::Phase::HASH, file.path, "failed to open file: " + std::string(std::strerror(errno)) } };
     }
 
     // 2. 分配读取缓冲区，分块循环读取 (Chunked Reading)
     // 内存友好（OOM 防范）：采用了基于固定大小 Buffer 的分块读取策略。决不会因为大文件撑爆内存。
     Fnv1aHash hash;
-    std::vector<char> buffer(bufferSize_);
+    // 关键优化：使用 unique_ptr<char[]> 避免 std::vector 的 zero-initialization 开销。
+    // 为什么不把它变成类的成员变量来复用内存？
+    // 答：因为 hash_file() 是被 ThreadPool 并行调用的（const 方法）。
+    // 每个 worker 线程必须拥有自己独立的 buffer，以保证彻底的线程安全（Thread-safety）。
+    std::unique_ptr<char[]> buffer(new char[bufferSize_]);
     while (input) {
-        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        input.read(buffer.get(), static_cast<std::streamsize>(bufferSize_));
         const std::streamsize bytesRead = input.gcount();
         if (bytesRead > 0) {
-            hash.update(buffer.data(), static_cast<size_t>(bytesRead)); // 将读到的数据块不断喂给哈希算法，更新 hash 状态
+            hash.update(buffer.get(), static_cast<size_t>(bytesRead)); // 将读到的数据块不断喂给哈希算法，更新 hash 状态
         }
     }
 
     // 3. 严谨的错误校验
     // 循环退出时，正常情况必须是因为遇到了文件尾 (EOF)，如果不是 EOF 导致的退出，说明发生了 I/O 错误（如磁盘掉线）
     if (!input.eof()) {
-        return HashResult{ false, file, 0, FileError{ FileError::Phase::HASH, file.path, "failed to read file." } };
+        return HashResult{ false, file, 0, FileError{ FileError::Phase::HASH, file.path, "failed to read file: " + std::string(std::strerror(errno)) } };
     }
 
     return HashResult{ true, file, hash.value(), FileError{} };
