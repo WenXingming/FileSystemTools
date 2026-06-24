@@ -17,11 +17,35 @@ DuplicateReport DuplicateFinder::find_duplicates(const std::string& rootPath) co
     const std::vector<FileInfo> sizeCollisions = find_size_collisions(walkResult.files);
 
     // ==========================================
+    // 物理折叠：消除硬链接冗余 I/O
+    // ==========================================
+    std::vector<FileInfo> uniquePhysicalFiles;
+    std::map<std::pair<uint64_t, uint64_t>, std::vector<FileInfo> > hardlinkFollowers;
+    for (std::vector<FileInfo>::const_iterator it = sizeCollisions.begin(); it != sizeCollisions.end(); ++it) {
+        std::pair<uint64_t, uint64_t> devIno = std::make_pair(it->device, it->inode);
+        if (hardlinkFollowers.find(devIno) == hardlinkFollowers.end()) {
+            uniquePhysicalFiles.push_back(*it);
+            hardlinkFollowers[devIno] = std::vector<FileInfo>();
+        } else {
+            hardlinkFollowers[devIno].push_back(*it);
+        }
+    }
+
+    // ==========================================
     // 智能分流道：保护小文件
     // ==========================================
     std::vector<FileInfo> smallCandidates;
     std::vector<FileInfo> largeCandidates;
-    split_candidates_by_threshold(sizeCollisions, 4096, smallCandidates, largeCandidates);
+    split_candidates_by_threshold(uniquePhysicalFiles, 4096, smallCandidates, largeCandidates);
+
+    // ==========================================
+    // 小文件物理排序：触发磁盘顺序读
+    // ==========================================
+    std::sort(smallCandidates.begin(), smallCandidates.end(), [](const FileInfo& left, const FileInfo& right) {
+        if (left.device != right.device) return left.device < right.device;
+        if (left.inode != right.inode) return left.inode < right.inode;
+        return left.path < right.path;
+    });
 
     // ==========================================
     // 第二级漏斗：大文件的局部哈希碰撞
@@ -34,7 +58,7 @@ DuplicateReport DuplicateFinder::find_duplicates(const std::string& rootPath) co
     // ==========================================
     // 第三级漏斗：全量哈希碰撞（双轨并发调度）
     // ==========================================
-    // 轨道 A：小文件极快，按照 64 的批次打包以避免锁竞争
+    // 汇流：将过了第二级漏斗的大文件和小文件合并
     std::vector<std::vector<FileInfo> > fullBatches = create_batches(smallCandidates, BATCH_SIZE);
     
     // 轨道 B：大文件哈希极慢，每一个都拆成独立批次（Batch Size = 1），最大化动态负载均衡
@@ -43,10 +67,26 @@ DuplicateReport DuplicateFinder::find_duplicates(const std::string& rootPath) co
 
     const std::vector<HashResult> fullHashes = compute_full_hashes(fullBatches);
 
-    // 滤掉最终防线
-    const std::vector<DuplicateGroup> duplicateGroups = find_exact_duplicates(fullHashes);
+    // ==========================================
+    // 展开物理折叠：将硬链接跟随者重新混入结果集
+    // ==========================================
+    std::vector<HashResult> unfoldedHashes = fullHashes;
+    for (std::vector<HashResult>::const_iterator it = fullHashes.begin(); it != fullHashes.end(); ++it) {
+        std::pair<uint64_t, uint64_t> devIno = std::make_pair(it->file.device, it->file.inode);
+        std::map<std::pair<uint64_t, uint64_t>, std::vector<FileInfo> >::const_iterator followerIt = hardlinkFollowers.find(devIno);
+        if (followerIt != hardlinkFollowers.end()) {
+            for (std::vector<FileInfo>::const_iterator f = followerIt->second.begin(); f != followerIt->second.end(); ++f) {
+                HashResult hr = *it;
+                hr.file = *f;
+                unfoldedHashes.push_back(hr);
+            }
+        }
+    }
 
-    DuplicateReport report = assemble_report(walkResult, partialHashes, fullHashes, duplicateGroups);
+    // 滤掉最终防线
+    const std::vector<DuplicateGroup> duplicateGroups = find_exact_duplicates(unfoldedHashes);
+
+    DuplicateReport report = assemble_report(walkResult, partialHashes, unfoldedHashes, duplicateGroups);
     report.hashTasks = partialBatches.size() + fullBatches.size();
     return report;
 }

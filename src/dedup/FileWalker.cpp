@@ -47,7 +47,7 @@ void FileWalker::collect_files_recursive(FileWalkResult& result, const std::stri
 
     // 处理普通文件，递归就到达了底端
     if (S_ISREG(status.st_mode)) {
-        result.files.push_back(FileInfo{ path, static_cast<uint64_t>(status.st_size) });
+        result.files.push_back(FileInfo{ path, static_cast<uint64_t>(status.st_size), static_cast<uint64_t>(status.st_dev), static_cast<uint64_t>(status.st_ino) });
         return;
     }
 

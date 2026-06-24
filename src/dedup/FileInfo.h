@@ -6,6 +6,8 @@
 struct FileInfo {
     std::string path;
     uint64_t size;
+    uint64_t device;
+    uint64_t inode;
 };
 
 struct FileError {

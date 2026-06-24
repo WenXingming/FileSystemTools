@@ -64,6 +64,32 @@ TEST(DuplicateFinderTest, FindsDuplicateFilesByContent) {
     remove_file_tree(root, std::vector<std::string>{ first, second, third });
 }
 
+TEST(DuplicateFinderTest, DedupsHardlinksWithoutHashingTwice) {
+    const std::string root = make_temp_dir();
+    const std::string original = root + "/original.txt";
+    const std::string hardlink = root + "/link.txt";
+    write_file(original, "hardlink content");
+    
+    // Create a hard link
+    ASSERT_EQ(link(original.c_str(), hardlink.c_str()), 0);
+
+    wxm::ThreadPool pool(1, 1, false, 100);
+    FileWalker walker;
+    Hasher hasher;
+    const DuplicateFinder finder(pool, walker, hasher);
+    const DuplicateReport report = finder.find_duplicates(root);
+
+    ASSERT_EQ(report.duplicateGroups.size(), 1u);
+    EXPECT_EQ(report.duplicateGroups[0].size, 16u);
+    ASSERT_EQ(report.duplicateGroups[0].paths.size(), 2u);
+    EXPECT_TRUE(report.duplicateGroups[0].paths[0] == hardlink || report.duplicateGroups[0].paths[0] == original);
+    
+    // Only 1 full hash task should be submitted because of physical folding!
+    EXPECT_EQ(report.hashTasks, 1u);
+
+    remove_file_tree(root, std::vector<std::string>{original, hardlink});
+}
+
 TEST(DuplicateFinderTest, IgnoresFilesWithDifferentSizes) {
     const std::string root = make_temp_dir();
     const std::string first = root + "/a.txt";

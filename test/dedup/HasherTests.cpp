@@ -39,9 +39,9 @@ void remove_file_tree(const std::string& root, const std::vector<std::string>& f
 FileInfo file_info(const std::string& path) {
     struct stat status;
     if (stat(path.c_str(), &status) != 0) {
-        return FileInfo{ path, 0 };
+        return FileInfo{ path, 0, 0, 0 };
     }
-    return FileInfo{ path, static_cast<uint64_t>(status.st_size) };
+    return FileInfo{ path, static_cast<uint64_t>(status.st_size), static_cast<uint64_t>(status.st_dev), static_cast<uint64_t>(status.st_ino) };
 }
 
 } // namespace
@@ -99,7 +99,7 @@ TEST(HasherTest, EmptyFileCanBeHashed) {
 TEST(HasherTest, MissingFileReturnsError) {
     const Hasher hasher;
 
-    const HashResult result = hasher.hash_file(FileInfo{ "/tmp/threadpool_hasher_missing_file_for_test", 0 });
+    const HashResult result = hasher.hash_file(FileInfo{ "/tmp/threadpool_hasher_missing_file_for_test", 0, 0, 0 });
 
     EXPECT_FALSE(result.ok);
     EXPECT_FALSE(result.error.message.empty());
