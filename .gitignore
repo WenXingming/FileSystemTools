@@ -1,0 +1,9 @@
+# vscode settings
+.vscode/
+
+# build artifacts
+build/
+build-bench*/
+
+# benchmark results
+benchmark/dedup/results/*
