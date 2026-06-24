@@ -11,12 +11,12 @@
 namespace {
 
 void print_report(const DuplicateReport& report, int threadCount) {
-    if (report.groups.empty()) {
+    if (report.duplicateGroups.empty()) {
         std::cout << "No duplicate files found.\n\n";
     }
     else {
-        for (size_t i = 0; i < report.groups.size(); ++i) {
-            const DuplicateGroup& group = report.groups[i];
+        for (size_t i = 0; i < report.duplicateGroups.size(); ++i) {
+            const DuplicateGroup& group = report.duplicateGroups[i];
             std::cout << "Duplicate group #" << (i + 1)
                 << ", size=" << group.size
                 << ", count=" << group.paths.size()
@@ -30,9 +30,14 @@ void print_report(const DuplicateReport& report, int threadCount) {
 
     std::cout << "Summary:\n";
     std::cout << "  scanned files: " << report.scannedFiles << "\n";
-    std::cout << "  hashed files: " << report.hashedFiles << "\n";
+    std::cout << "  size-skipped files: " << report.sizeSkippedFiles << "\n";
+    std::cout << "  partial-hashed files: " << report.partialHashedFiles << "\n";
+    std::cout << "  full-hashed files: " << report.fullHashedFiles << "\n";
+    std::cout << "  partial-hash bytes read: " << report.partialHashBytesRead << "\n";
+    std::cout << "  full-hash bytes read: " << report.fullHashBytesRead << "\n";
+    std::cout << "  hash tasks: " << report.hashTasks << "\n";
     std::cout << "  threads: " << threadCount << "\n";
-    std::cout << "  duplicate groups: " << report.groups.size() << "\n";
+    std::cout << "  duplicate groups: " << report.duplicateGroups.size() << "\n";
     std::cout << "  errors: " << report.errors.size() << "\n";
 
     if (!report.errors.empty()) {

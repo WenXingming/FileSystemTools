@@ -23,8 +23,13 @@ struct DuplicateGroup {
 
 struct DuplicateReport {
     size_t scannedFiles = 0;
-    size_t hashedFiles = 0;
-    std::vector<DuplicateGroup> groups;
+    size_t sizeSkippedFiles = 0;
+    size_t partialHashedFiles = 0;
+    size_t fullHashedFiles = 0;
+    uint64_t partialHashBytesRead = 0;
+    uint64_t fullHashBytesRead = 0;
+    size_t hashTasks = 0;
+    std::vector<DuplicateGroup> duplicateGroups;
     std::vector<FileError> errors;
 };
 

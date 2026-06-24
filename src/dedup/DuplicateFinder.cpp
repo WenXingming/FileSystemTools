@@ -99,17 +99,17 @@ DuplicateReport DuplicateFinder::assemble_report(const FileWalkResult& walkResul
         if (!it->ok) {
             report.errors.push_back(it->error);
         } else {
-            ++report.hashedFiles;
+            ++report.fullHashedFiles;
         }
     }
 
-    report.groups = duplicateGroups;
+    report.duplicateGroups = duplicateGroups;
 
-    for (std::vector<DuplicateGroup>::iterator it = report.groups.begin(); it != report.groups.end(); ++it) {
+    for (std::vector<DuplicateGroup>::iterator it = report.duplicateGroups.begin(); it != report.duplicateGroups.end(); ++it) {
         std::sort(it->paths.begin(), it->paths.end());
     }
 
-    std::sort(report.groups.begin(), report.groups.end(), [](const DuplicateGroup& left, const DuplicateGroup& right) {
+    std::sort(report.duplicateGroups.begin(), report.duplicateGroups.end(), [](const DuplicateGroup& left, const DuplicateGroup& right) {
         if (left.size != right.size) {
             return left.size < right.size;
         }

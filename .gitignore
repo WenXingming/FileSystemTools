@@ -7,3 +7,6 @@ build-bench*/
 
 # benchmark results
 benchmark/dedup/results/*
+
+# agent skills
+.agents/

@@ -55,11 +55,11 @@ TEST(DuplicateFinderTest, FindsDuplicateFilesByContent) {
     const DuplicateFinder finder(pool, walker, hasher);
     const DuplicateReport report = finder.find_duplicates(root);
 
-    ASSERT_EQ(report.groups.size(), 1u);
-    EXPECT_EQ(report.groups[0].size, 4u);
-    ASSERT_EQ(report.groups[0].paths.size(), 2u);
-    EXPECT_EQ(report.groups[0].paths[0], first);
-    EXPECT_EQ(report.groups[0].paths[1], second);
+    ASSERT_EQ(report.duplicateGroups.size(), 1u);
+    EXPECT_EQ(report.duplicateGroups[0].size, 4u);
+    ASSERT_EQ(report.duplicateGroups[0].paths.size(), 2u);
+    EXPECT_EQ(report.duplicateGroups[0].paths[0], first);
+    EXPECT_EQ(report.duplicateGroups[0].paths[1], second);
 
     remove_file_tree(root, std::vector<std::string>{ first, second, third });
 }
@@ -78,8 +78,8 @@ TEST(DuplicateFinderTest, IgnoresFilesWithDifferentSizes) {
     const DuplicateReport report = finder.find_duplicates(root);
 
     EXPECT_EQ(report.scannedFiles, 2u);
-    EXPECT_EQ(report.hashedFiles, 0u);
-    EXPECT_TRUE(report.groups.empty());
+    EXPECT_EQ(report.fullHashedFiles, 0u);
+    EXPECT_TRUE(report.duplicateGroups.empty());
 
     remove_file_tree(root, std::vector<std::string>{ first, second });
 }
@@ -98,8 +98,8 @@ TEST(DuplicateFinderTest, DoesNotReportUniqueSameSizeDifferentContent) {
     const DuplicateReport report = finder.find_duplicates(root);
 
     EXPECT_EQ(report.scannedFiles, 2u);
-    EXPECT_EQ(report.hashedFiles, 2u);
-    EXPECT_TRUE(report.groups.empty());
+    EXPECT_EQ(report.fullHashedFiles, 2u);
+    EXPECT_TRUE(report.duplicateGroups.empty());
 
     remove_file_tree(root, std::vector<std::string>{ first, second });
 }
@@ -120,7 +120,7 @@ TEST(DuplicateFinderTest, ReportsScannedAndHashedCounts) {
     const DuplicateReport report = finder.find_duplicates(root);
 
     EXPECT_EQ(report.scannedFiles, 3u);
-    EXPECT_EQ(report.hashedFiles, 2u);
+    EXPECT_EQ(report.fullHashedFiles, 2u);
     EXPECT_EQ(report.errors.size(), 0u);
 
     remove_file_tree(root, std::vector<std::string>{ first, second, third });
@@ -148,9 +148,9 @@ TEST(DuplicateFinderTest, HandlesManyDuplicateCandidates) {
     const DuplicateFinder finder(pool, walker, hasher);
     const DuplicateReport report = finder.find_duplicates(root);
 
-    ASSERT_EQ(report.groups.size(), 1u);
-    EXPECT_EQ(report.groups[0].paths.size(), 10u);
-    EXPECT_EQ(report.hashedFiles, 20u);
+    ASSERT_EQ(report.duplicateGroups.size(), 1u);
+    EXPECT_EQ(report.duplicateGroups[0].paths.size(), 10u);
+    EXPECT_EQ(report.fullHashedFiles, 20u);
 
     remove_file_tree(root, files);
 }
@@ -167,8 +167,8 @@ TEST(DuplicateFinderTest, UsesInjectedThreadPool) {
     Hasher hasher;
     const DuplicateFinder finder(pool, walker, hasher);
     const DuplicateReport report = finder.find_duplicates(root);
-    ASSERT_EQ(report.groups.size(), 1u);
-    EXPECT_EQ(report.groups[0].paths.size(), 2u);
+    ASSERT_EQ(report.duplicateGroups.size(), 1u);
+    EXPECT_EQ(report.duplicateGroups[0].paths.size(), 2u);
 
     remove_file_tree(root, std::vector<std::string>{ first, second });
 }
@@ -183,8 +183,8 @@ TEST(DuplicateFinderTest, ReportsWalkErrors) {
     const DuplicateReport report = finder.find_duplicates(missingPath);
 
     EXPECT_EQ(report.scannedFiles, 0u);
-    EXPECT_EQ(report.hashedFiles, 0u);
-    EXPECT_TRUE(report.groups.empty());
+    EXPECT_EQ(report.fullHashedFiles, 0u);
+    EXPECT_TRUE(report.duplicateGroups.empty());
     ASSERT_EQ(report.errors.size(), 1u);
     EXPECT_EQ(report.errors[0].phase, FileError::Phase::SCAN);
     EXPECT_EQ(report.errors[0].path, missingPath);
