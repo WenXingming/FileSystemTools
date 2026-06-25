@@ -5,11 +5,12 @@
 #include <string>
 
 #include "FileInfo.h"
+#include "Blake3Hash.h"
 
 struct HashResult {
     bool ok;
     FileInfo file;
-    uint64_t hash;
+    Blake3Value hash;
     FileError error;
 };
 

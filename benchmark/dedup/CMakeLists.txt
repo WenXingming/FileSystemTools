@@ -33,4 +33,5 @@ target_compile_features(dedupBenchmark PRIVATE cxx_std_17)
 target_link_libraries(dedupBenchmark PRIVATE
     ThreadPool
     benchmark::benchmark
+    blake3
 )

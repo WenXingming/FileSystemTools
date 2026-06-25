@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 3.16)
-project(FileSystemTools LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.18)
+project(FileSystemTools LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,11 +19,25 @@ if(NOT CLI11_FOUND)
     FetchContent_MakeAvailable(cli11)
 endif()
 
-FetchContent_Declare(
-    ThreadPool
-    GIT_REPOSITORY https://github.com/WenXingming/ThreadPool.git
-)
-FetchContent_MakeAvailable(ThreadPool)
+find_package(ThreadPool QUIET)
+if(NOT ThreadPool_FOUND)
+    FetchContent_Declare(
+        ThreadPool
+        GIT_REPOSITORY https://github.com/WenXingming/ThreadPool.git
+    )
+    FetchContent_MakeAvailable(ThreadPool)
+endif()
+
+find_package(blake3 QUIET)
+if(NOT blake3_FOUND)
+    FetchContent_Declare(
+        blake3
+        GIT_REPOSITORY https://github.com/BLAKE3-team/BLAKE3.git
+        GIT_TAG        1.5.1
+        SOURCE_SUBDIR  c
+    )
+    FetchContent_MakeAvailable(blake3)
+endif()
 
 include(CTest)
 

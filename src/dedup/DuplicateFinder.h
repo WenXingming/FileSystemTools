@@ -17,7 +17,7 @@ class ThreadPool;
 
 struct DuplicateGroup {
     uint64_t size;
-    uint64_t hash;
+    Blake3Value hash;
     std::vector<std::string> paths;
 };
 

@@ -171,7 +171,7 @@ std::vector<HashResult> DuplicateFinder::compute_partial_hashes(const std::vecto
 }
 
 std::vector<FileInfo> DuplicateFinder::find_partial_collisions(const std::vector<HashResult>& partialHashes) const {
-    std::map<std::pair<uint64_t, uint64_t>, std::vector<FileInfo> > buckets;
+    std::map<std::pair<uint64_t, Blake3Value>, std::vector<FileInfo> > buckets;
     for (std::vector<HashResult>::const_iterator it = partialHashes.begin(); it != partialHashes.end(); ++it) {
         if (it->ok) {
             buckets[std::make_pair(it->file.size, it->hash)].push_back(it->file);
@@ -179,7 +179,7 @@ std::vector<FileInfo> DuplicateFinder::find_partial_collisions(const std::vector
     }
 
     std::vector<FileInfo> collisions;
-    for (std::map<std::pair<uint64_t, uint64_t>, std::vector<FileInfo> >::const_iterator it = buckets.begin(); it != buckets.end(); ++it) {
+    for (std::map<std::pair<uint64_t, Blake3Value>, std::vector<FileInfo> >::const_iterator it = buckets.begin(); it != buckets.end(); ++it) {
         if (it->second.size() < 2) {
             continue;
         }
@@ -220,7 +220,7 @@ std::vector<HashResult> DuplicateFinder::compute_full_hashes(const std::vector<s
 }
 
 std::vector<DuplicateGroup> DuplicateFinder::find_exact_duplicates(const std::vector<HashResult>& fullHashes) const {
-    std::map<std::pair<uint64_t, uint64_t>, std::vector<std::string> > buckets;
+    std::map<std::pair<uint64_t, Blake3Value>, std::vector<std::string> > buckets;
     for (std::vector<HashResult>::const_iterator it = fullHashes.begin(); it != fullHashes.end(); ++it) {
         if (it->ok) {
             buckets[std::make_pair(it->file.size, it->hash)].push_back(it->file.path);
@@ -228,7 +228,7 @@ std::vector<DuplicateGroup> DuplicateFinder::find_exact_duplicates(const std::ve
     }
 
     std::vector<DuplicateGroup> groups;
-    for (std::map<std::pair<uint64_t, uint64_t>, std::vector<std::string> >::const_iterator it = buckets.begin(); it != buckets.end(); ++it) {
+    for (std::map<std::pair<uint64_t, Blake3Value>, std::vector<std::string> >::const_iterator it = buckets.begin(); it != buckets.end(); ++it) {
         if (it->second.size() > 1) {
             DuplicateGroup group;
             group.size = it->first.first;
