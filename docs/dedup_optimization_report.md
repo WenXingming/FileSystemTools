@@ -1,0 +1,467 @@
+# dedup 性能优化与 Benchmark 报告
+
+本文档基于 [dedup_benchmark_record.md](dedup_benchmark_record.md) 中按 commit 重新运行的 Google Benchmark 结果，整理 `dedup` 文件去重工具的性能优化过程。
+
+这份报告重点不是罗列所有数字，而是把每一步优化讲清楚：
+
+- 为什么要做这个优化（怀疑的瓶颈是什么）。
+- 怎么做这个优化（优化和实现思路）。
+- benchmark 结果是否支持这个优化。
+
+原始终端输出保留在 [dedup_benchmark_record.md](dedup_benchmark_record.md)。本文只整理 `_mean` 结果，并以 8 线程结果作为主要讨论口径。
+
+---
+
+## 结论先行
+
+这轮优化可以分成两条主线看：小文件优化和大文件优化。
+
+第一条是大量小文件场景下优化，核心目标是降低“每个文件都会发生的固定成本”。V2 的 buffer 清零优化本质上是通用优化，但它对小文件尤其明显：小文件有效数据少、文件数量多，buffer 初始化、任务调度、future 管理这类固定成本占比更高。V2 之后，基础 workload 的 8 线程耗时普遍降低到原来的约三分之一。V3 的小文件 batch 也是沿着这条主线继续尝试，只是当前 benchmark 没有证明明显收益。
+
+第二条是大文件漏斗优化，核心目标是减少无效 I/O。V4 增加 head+tail partial hash 后，对“大小相同但内容不同”的大文件非常有效。相对 V2，`large_same_size_different_content` 从 `76.9 ms` 降到 `1.93 ms`，约 `39.8x`；`large_same_size_same_prefix_different_tail` 从 `77.1 ms` 降到 `1.97 ms`，约 `39.1x`。
+
+报告里最容易误读的是 V3 到 V4 的巨大提升。V3 把 batch 策略统一应用到了大文件，导致大文件任务出现长尾，这是实现边界问题。V4 的部分提升来自修复这个回归，所以评估 V4 的真实净收益时，更应该看 `V2 -> V4`，而不是只看 `V3 -> V4`。
+
+可以用一句话概括：
+
+> 这个优化不是简单加线程，而是按文件类型拆瓶颈：小文件主线降低每文件固定成本，大文件主线减少无效 I/O，真实重复大文件保持细粒度调度避免长尾。
+
+---
+
+## 测试环境与运行方法
+
+### 机器环境
+
+| 项目 | 值 |
+| --- | --- |
+| 主机 | `wxm-Precision-7920-Tower` |
+| CPU | 24 logical CPUs, 3500 MHz |
+| L1 Data Cache | 32 KiB x12 |
+| L1 Instruction Cache | 32 KiB x12 |
+| L2 Cache | 1024 KiB x12 |
+| L3 Cache | 16896 KiB x1 |
+| Benchmark 日期 | 2026-06-25 |
+| 数据生成目录 | `/tmp/threadpool_dedup_bench_XXXXXX` |
+
+各版本记录：
+
+| 版本 | Commit | 时间 | Load Average |
+| --- | --- | --- | --- |
+| V1 基线 | `ad7f5ba10f6403cab0ccab2b753c3e8641f016cd` | 2026-06-25T10:02:06+08:00 | 2.23, 1.29, 0.94 |
+| V2 Buffer 优化 | `d39a756702fe1917ab851c1945cdbb8af41dcac0` | 2026-06-25T10:07:42+08:00 | 4.36, 2.19, 1.40 |
+| V3 小文件批量切片 | `b4fc4af268eef56030fe0845a1df7016aeb88648` | 2026-06-25T10:23:30+08:00 | 1.55, 3.09, 2.70 |
+| V4 大文件首尾哈希 | `4972c07ebd6e209486bebe4ba98a47c16ebf032c` | 2026-06-25T10:37:27+08:00 | 1.23, 1.35, 1.86 |
+| V5 硬链接折叠与 I/O 局部性 | `17d2aeac4c3495d26b64607c66bacaaa89a067e1` | 未单独 benchmark | - |
+
+每次运行均提示 CPU scaling enabled，所以本文关注趋势和数量级，不把小幅波动解释为确定结论。
+
+### 运行命令
+
+构建：
+
+```bash
+cmake -S . -B build-bench \
+  -DBUILD_BENCHMARKS=ON \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DTHREADPOOL_SOURCE_DIR=/home/wxm/ThreadPool
+
+cmake --build build-bench
+```
+
+运行：
+
+```bash
+./build-bench/benchmark/dedup/dedupBenchmark \
+  --benchmark_min_time=1.0 \
+  --benchmark_repetitions=3 \
+  --benchmark_report_aggregates_only=true
+```
+
+需要机器可读结果时，可以输出 JSON：
+
+```bash
+./build-bench/benchmark/dedup/dedupBenchmark \
+  --benchmark_min_time=1.0 \
+  --benchmark_repetitions=3 \
+  --benchmark_report_aggregates_only=true \
+  --benchmark_format=json \
+  > benchmark/dedup/results/latest.json
+```
+
+### 指标口径
+
+| 字段 | 含义 |
+| --- | --- |
+| `Time` | wall time，用户真实等待时间，本文主要看它 |
+| `CPU` | CPU 实际执行时间；如果明显小于 `Time`，说明 I/O 等待很多 |
+| `_mean` | 3 次重复运行的平均值 |
+| `bytes_per_second` | Google Benchmark 按逻辑文件大小计算的吞吐 |
+| `items_per_second` | 每秒处理文件数 |
+
+注意：V4 的 partial hash 场景中，`bytes_per_second` 是逻辑吞吐，不是实际读盘吞吐。程序可能只读每个大文件的头尾几 KiB，但 Google Benchmark 仍按完整 8MiB 文件计入逻辑数据量。
+
+---
+
+## Benchmark 设计
+
+### 设计原则
+
+文件去重的瓶颈不是单一的，不同文件形态对应不同问题：
+
+| 场景 | 主要瓶颈 |
+| --- | --- |
+| 大量小文件 | open/read/close、任务调度、future 管理 |
+| 中等文件 | I/O 等待与 hash 计算混合 |
+| 大文件同大小但内容不同 | 无效 full hash 造成大量 I/O |
+| 大文件真实重复 | 必须 full hash，考验并发和负载均衡 |
+| 混合目录 | 小文件调度、大文件漏斗、负载均衡同时出现 |
+
+因此 benchmark 分成两类：
+
+- 基础 workload：V1 到 V4 都存在，用于看小文件/中等文件的基础吞吐演进。
+- 专项 workload：从 V2 开始加入，用于验证具体优化点。
+
+### Workload 列表
+
+| Workload | 文件数 | 文件大小 | 重复比例 | 目的 |
+| --- | ---: | ---: | ---: | --- |
+| `100_files_4KiB` | 100 | 4 KiB | 20% | 小规模 sanity |
+| `1000_files_4KiB` | 1000 | 4 KiB | 20% | 小文件基础吞吐 |
+| `10000_files_4KiB` | 10000 | 4 KiB | 20% | many-small-files |
+| `1000_files_256KiB` | 1000 | 256 KiB | 20% | 中等文件吞吐 |
+| `many_small_unique_same_size` | 10000 | 4 KiB | 0% | size 过滤失效，必须 hash 全部小文件 |
+| `many_small_duplicates` | 10000 | 4 KiB | 100% | 小文件重复场景 |
+| `large_same_size_different_content` | 20 | 8 MiB | 0% | 大文件同大小但内容不同 |
+| `large_same_size_same_prefix_different_tail` | 20 | 8 MiB | 0% | 大文件同前缀但尾部不同 |
+| `large_duplicates` | 20 | 8 MiB | 100% | 大文件真实重复 |
+| `mixed_realistic` | 1000 | 混合 | 20% | 模拟真实混合目录 |
+
+---
+
+## 优化路线
+
+最终优化方向是一条漏斗：
+
+```text
+扫描文件
+  -> 按 size 分组，大小唯一直接跳过
+  -> hardlink 折叠，避免同一物理文件重复 I/O
+  -> 小文件：直接 full hash，可以合批
+  -> 大文件：先做 head+tail partial hash
+  -> partial hash 仍碰撞：再 full hash
+  -> 按 (size, full hash) 输出重复组
+```
+
+核心原则：
+
+- 大文件优化：少读。
+- 小文件优化：少调度、少固定开销。
+- 真实重复大文件：无法少读，只能靠并发和细粒度调度避免长尾。
+- 文件系统优化：识别 hardlink，按 inode 改善访问局部性。
+
+---
+
+## 版本演进与结果
+
+### V1：多线程 full hash 基线
+
+#### 做了什么
+
+V1 已经有线程池，流程是：
+
+```text
+扫描 -> size 分组 -> size 冲突文件全部 full hash -> 按 (size, hash) 分组
+```
+
+它是“多线程 full hash 基线”，不是单线程基线。
+
+#### 全量结果
+
+单位：`Time mean`。
+
+| Workload | 1 线程 | 2 线程 | 4 线程 | 8 线程 | 1->8 加速 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `100_files_4KiB` | 9.92 ms | 6.27 ms | 3.65 ms | 2.41 ms | 4.12x |
+| `1000_files_4KiB` | 121 ms | 65.3 ms | 38.1 ms | 22.1 ms | 5.48x |
+| `10000_files_4KiB` | 1042 ms | 597 ms | 355 ms | 214 ms | 4.87x |
+| `1000_files_256KiB` | 852 ms | 437 ms | 227 ms | 123 ms | 6.93x |
+
+#### 解读
+
+V1 证明线程池方向是有效的。`1000_files_256KiB` 从 `852 ms` 降到 `123 ms`，接近 `6.93x`，说明读取文件时存在大量等待，多个线程可以重叠 I/O。
+
+但 V1 的策略仍然比较粗：只要 size 相同，就直接 full hash。大文件会产生无效 I/O，小文件会放大每个文件的固定成本。
+
+---
+
+### V2：Buffer 避免 zero-initialization
+
+#### 做了什么
+
+原来每次 hash 文件都会创建：
+
+```cpp
+std::vector<char> buffer(bufferSize_);
+```
+
+这会分配并清零 buffer。对 4KiB 小文件来说，如果 buffer 很大，清零成本可能比真正读取文件还贵。
+
+V2 改为：
+
+```cpp
+std::unique_ptr<char[]> buffer(new char[bufferSize_]);
+```
+
+它只分配，不做无意义清零，因为后续 `read` 会立刻覆盖这块内存。
+
+#### 全量结果
+
+单位：`Time mean`。最后一列比较 8 线程；V2 新增的专项 workload 标记为 `新增`。
+
+| Workload | 1 线程 | 2 线程 | 4 线程 | 8 线程 | 8线程对比 V1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `100_files_4KiB` | 2.40 ms | 1.40 ms | 0.867 ms | 0.749 ms | 快 3.22x |
+| `1000_files_4KiB` | 22.2 ms | 12.6 ms | 7.92 ms | 6.83 ms | 快 3.24x |
+| `10000_files_4KiB` | 129 ms | 105 ms | 83.3 ms | 70.2 ms | 快 3.05x |
+| `1000_files_256KiB` | 169 ms | 91.8 ms | 49.8 ms | 32.1 ms | 快 3.83x |
+| `many_small_unique_same_size` | 332 ms | 220 ms | 147 ms | 117 ms | 新增 |
+| `many_small_duplicates` | 334 ms | 224 ms | 153 ms | 121 ms | 新增 |
+| `large_same_size_different_content` | 479 ms | 243 ms | 124 ms | 76.9 ms | 新增 |
+| `large_same_size_same_prefix_different_tail` | 481 ms | 243 ms | 124 ms | 77.1 ms | 新增 |
+| `large_duplicates` | 482 ms | 244 ms | 124 ms | 77.4 ms | 新增 |
+| `mixed_realistic` | 3319 ms | 1680 ms | 862 ms | 461 ms | 新增 |
+
+#### 解读
+
+V2 是整轮优化里最稳定、最容易解释的一步。它不改变去重逻辑，只去掉每个文件都会触发的无意义清零成本。
+
+基础 workload 的 8 线程结果普遍提升约 `3x`。这说明当文件很多时，单个文件上的固定开销会被放大，哪怕每次只浪费一点点，也会在全局结果里变得很明显。
+
+---
+
+### V3：小文件批量切片
+
+#### 做了什么
+
+V2 后，我们怀疑小文件瓶颈从 buffer 初始化转移到了任务调度。
+
+旧模型：
+
+```text
+1 个文件 = 1 个线程池任务 = 1 个 future
+```
+
+V3 改成批量切片：
+
+```text
+一批文件 = 1 个线程池任务 = 1 个 future
+```
+
+目标是减少任务队列争用和 future 管理成本。这个优化本来只应该服务于小文件；如果把同样的 batch 策略用于大文件，就会变成负载均衡问题。
+
+#### 全量结果
+
+单位：`Time mean`。最后一列比较 8 线程。
+
+| Workload | 1 线程 | 2 线程 | 4 线程 | 8 线程 | 8线程对比 V2 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `100_files_4KiB` | 2.77 ms | 2.79 ms | 2.84 ms | 2.76 ms | 慢 3.68x |
+| `1000_files_4KiB` | 19.2 ms | 19.0 ms | 11.2 ms | 11.1 ms | 慢 1.63x |
+| `10000_files_4KiB` | 139 ms | 111 ms | 83.5 ms | 70.1 ms | 基本持平 |
+| `1000_files_256KiB` | 170 ms | 115 ms | 94.5 ms | 95.2 ms | 慢 2.97x |
+| `many_small_unique_same_size` | 289 ms | 215 ms | 165 ms | 119 ms | 慢 1.02x |
+| `many_small_duplicates` | 312 ms | 222 ms | 166 ms | 137 ms | 慢 1.13x |
+| `large_same_size_different_content` | 480 ms | 514 ms | 511 ms | 510 ms | 慢 6.63x，属于大文件误用 batch 的实现回归 |
+| `large_same_size_same_prefix_different_tail` | 483 ms | 512 ms | 515 ms | 512 ms | 慢 6.64x，属于大文件误用 batch 的实现回归 |
+| `large_duplicates` | 481 ms | 518 ms | 517 ms | 516 ms | 慢 6.67x，属于大文件误用 batch 的实现回归 |
+| `mixed_realistic` | 3323 ms | 1892 ms | 1691 ms | 1505 ms | 慢 3.26x，受大文件回归拖累 |
+
+#### 解读
+
+V3 的价值不是“证明小文件 batch 一定更快”，而是帮助我们划清策略边界。
+
+只看小文件，V3 没有明显收益：
+
+- `10000_files_4KiB` 基本持平：`70.2 ms -> 70.1 ms`。
+- `many_small_unique_same_size` 略慢：`117 ms -> 119 ms`。
+- `many_small_duplicates` 略慢：`121 ms -> 137 ms`。
+
+这说明在当前 `/tmp` 和 Page Cache 较热的 benchmark 环境下，单文件任务调度不是主要瓶颈。文件数量更大、冷缓存、真实磁盘或系统调用更重的环境下，batch 仍可能有收益，但这组数据没有证明出来。
+
+V3 暴露出的真正问题是：
+
+```text
+统一 batch 对小文件可能合理，但对大文件非常危险。
+```
+
+如果一个 worker 拿到 64 个大文件，它会长时间运行，其他线程很快空闲，整体耗时被最慢的 batch 拖住。因此，大文件退化不应归因于“小文件切片思路”本身，而应归因于实现时没有把小文件和大文件的调度策略拆开。
+
+---
+
+### V4：大文件首尾哈希与细粒度调度
+
+#### 做了什么
+
+V4 同时做了两件事。
+
+第一，修复 V3 暴露的大文件调度问题：
+
+```text
+小文件：可以 batch，减少任务开销
+大文件：Batch=1，保持线程池负载均衡
+```
+
+第二，新增大文件漏斗：
+
+```text
+size 相同
+  -> 读取头部 2KiB + 尾部 2KiB，计算 partial hash
+  -> partial hash 不同：跳过 full hash
+  -> partial hash 相同：进入 full hash
+```
+
+这个设计的目标很明确：对同大小但内容不同的大文件，尽早用少量 I/O 排除，避免从头到尾 full hash。
+
+#### 全量结果
+
+单位：`Time mean`。`8线程对比 V3` 用来观察 V4 修复 V3 回归的幅度；`8线程对比 V2` 更接近 V4 相对稳定基线的真实净收益。
+
+| Workload | 1 线程 | 2 线程 | 4 线程 | 8 线程 | 8线程对比 V3 | 8线程对比 V2 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `100_files_4KiB` | 2.51 ms | 2.84 ms | 2.83 ms | 2.79 ms | 基本持平 | 慢 3.72x |
+| `1000_files_4KiB` | 22.8 ms | 19.3 ms | 11.1 ms | 11.2 ms | 基本持平 | 慢 1.64x |
+| `10000_files_4KiB` | 137 ms | 99.7 ms | 84.7 ms | 69.8 ms | 基本持平 | 基本持平 |
+| `1000_files_256KiB` | 176 ms | 97.1 ms | 58.5 ms | 37.1 ms | 快 2.57x | 慢 1.16x |
+| `many_small_unique_same_size` | 309 ms | 219 ms | 145 ms | 130 ms | 慢 1.09x | 慢 1.11x |
+| `many_small_duplicates` | 316 ms | 222 ms | 175 ms | 132 ms | 基本持平 | 慢 1.09x |
+| `large_same_size_different_content` | 1.02 ms | 1.71 ms | 1.86 ms | 1.93 ms | 快 264x，含修复回归 | 快 39.8x，真实 partial hash 收益 |
+| `large_same_size_same_prefix_different_tail` | 0.995 ms | 1.59 ms | 1.82 ms | 1.97 ms | 快 260x，含修复回归 | 快 39.1x，真实 partial hash 收益 |
+| `large_duplicates` | 485 ms | 245 ms | 126 ms | 78.5 ms | 快 6.57x，主要是修复回归 | 基本持平 |
+| `mixed_realistic` | 2538 ms | 1287 ms | 671 ms | 358 ms | 快 4.20x，含修复回归 | 快 1.29x，真实净收益 |
+
+#### 解读
+
+V4 的结果需要分三类解释。
+
+非重复大文件极大加速。`large_same_size_different_content` 相比 V2 从 `76.9 ms` 降到 `1.93 ms`，约 `39.8x`。原因是这些文件虽然 size 相同，但头尾局部哈希不同，所以不需要 full hash。
+
+同前缀不同尾的大文件也能被过滤。`large_same_size_same_prefix_different_tail` 相比 V2 从 `77.1 ms` 降到 `1.97 ms`，约 `39.1x`。这个 workload 证明只读头部不够，head+tail 比只读 head 更稳。
+
+真实重复大文件不会天然变快。`large_duplicates` 相比 V3 从 `516 ms` 降到 `78.5 ms`，但相比 V2 的 `77.4 ms` 基本持平。因为文件真的重复，partial hash 不能排除，最终仍然必须 full hash。这里 V4 的价值是修复 V3 的大文件长尾，而不是让真实重复大文件少读数据。
+
+`mixed_realistic` 相比 V3 从 `1505 ms` 降到 `358 ms`，包含修复回归；相比 V2 从 `461 ms` 降到 `358 ms`，约 `1.29x`，这才是 V4 在混合场景里的真实净收益。
+
+---
+
+### V5：硬链接折叠与 I/O 局部性
+
+#### 做了什么
+
+V5 引入 `device/inode` 元数据：
+
+```cpp
+struct FileInfo {
+    std::string path;
+    uint64_t size;
+    uint64_t device;
+    uint64_t inode;
+};
+```
+
+它支持两个优化：
+
+- 硬链接折叠：多个路径指向同一个 `(device, inode)` 时，只 hash 一次。
+- inode 排序：小文件按 `(device, inode)` 排序，尽量改善真实磁盘上的访问局部性。
+
+#### Benchmark 状态
+
+V5 本轮没有单独 benchmark。
+
+原因不是这个优化不重要，而是当前 benchmark 不适合验证它：
+
+- 数据集没有专门构造 hardlink，无法体现硬链接折叠收益。
+- benchmark 在 `/tmp` 生成数据，容易被 tmpfs 或 Page Cache 掩盖真实磁盘访问差异。
+- inode 排序更适合在冷缓存、真实磁盘、大量碎片小文件场景验证。
+
+后续应该新增：
+
+- `hardlink_heavy`：大量 hardlink，验证 full hash 次数减少。
+- `cold_cache_many_small`：真实磁盘冷缓存，验证 inode 排序效果。
+
+---
+
+## 汇总结果
+
+### 小文件与基础 workload 演进
+
+只看 V1 到 V4 都存在的基础 workload，比较 8 线程：
+
+| Workload | V1 | V2 | V3 | V4 | 最终结论 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `100_files_4KiB` | 2.41 ms | 0.749 ms | 2.76 ms | 2.79 ms | 短任务噪声大，不作为核心结论 |
+| `1000_files_4KiB` | 22.1 ms | 6.83 ms | 11.1 ms | 11.2 ms | V4 仍比 V1 快 1.97x |
+| `10000_files_4KiB` | 214 ms | 70.2 ms | 70.1 ms | 69.8 ms | V4 比 V1 快 3.07x |
+| `1000_files_256KiB` | 123 ms | 32.1 ms | 95.2 ms | 37.1 ms | V4 比 V1 快 3.32x |
+
+这张表主要回答的是：
+
+```text
+小文件/中等文件的基础吞吐有没有变好？
+```
+
+答案是：有，主要来自 V2 的 buffer 优化。V2 降低的是每文件固定成本，所以对大量小文件尤其明显。V3 在部分基础 workload 上有波动；其中大文件相关退化属于 batch 策略应用范围过宽的实现问题，V4 对此做了修复。
+
+### 大文件与专项 workload 验证
+
+只看 V2/V3/V4 都存在的专项 workload，比较 8 线程：
+
+| Workload | V2 | V3 | V4 | 说明 |
+| --- | ---: | ---: | ---: | --- |
+| `many_small_unique_same_size` | 117 ms | 119 ms | 130 ms | 小文件 batching 在热缓存下未证明收益 |
+| `many_small_duplicates` | 121 ms | 137 ms | 132 ms | 小文件结果波动，未证明收益 |
+| `large_same_size_different_content` | 76.9 ms | 510 ms | 1.93 ms | V3 退化是实现问题；V2->V4 约 39.8x，才是 partial hash 净收益 |
+| `large_same_size_same_prefix_different_tail` | 77.1 ms | 512 ms | 1.97 ms | V2->V4 约 39.1x，证明 head+tail 有效 |
+| `large_duplicates` | 77.4 ms | 516 ms | 78.5 ms | V4 修复 V3 长尾；相对 V2 基本持平 |
+| `mixed_realistic` | 461 ms | 1505 ms | 358 ms | V4 修复 V3 回归；相对 V2 约 1.29x |
+
+这张表主要回答的是：
+
+```text
+大文件优化有没有减少无效 I/O？
+```
+
+答案是：
+
+- 小文件 batching 在当前 benchmark 中没有证明出明显收益。
+- V3 的大文件下降属于实现边界问题：统一 batch 误用于大文件。
+- V4 的 partial hash 对非重复大文件非常有效，真实收益应看 V2->V4。
+- 真实重复大文件仍然必须 full hash，所以相对 V2 基本持平是符合预期的。
+- 混合场景最终 V4 最好；相对 V2 的真实净收益约 `1.29x`。
+
+---
+
+## 叙述讲法
+
+可以按下面这条主线讲：
+
+- V1 已经有线程池，benchmark 证明并行 I/O 能带来明显加速，例如 `1000_files_256KiB` 从 `852 ms` 降到 `123 ms`。
+- 小文件主线关注每文件固定成本。V2 优化 buffer 分配，避免每个文件 hash 前无意义清零；这个优化是通用的，但对小文件和大量文件特别有效，基础 workload 普遍提升约 `3x`。
+- V3 继续沿着小文件主线尝试 batch，想减少任务和 future 数量。但 benchmark 说明，在当前热缓存 `/tmp` 环境下，小文件 batch 没有证明明显收益；同时它暴露了一个实现边界：大文件不能统一 batch。
+- 大文件主线关注减少无效 I/O。V4 把小文件和大文件调度拆开，大文件使用 Batch=1 避免长尾，并加入 head+tail partial hash。相对 V2，非重复大文件场景提升约 `40x`；真实重复大文件相对 V2 基本持平，符合“必须 full hash”的预期。
+- V5 引入 `device/inode`，用于 hardlink 折叠和 I/O 局部性优化，但还需要专门 benchmark 验证。
+
+更短的版本：
+
+> 我把文件去重拆成两条优化主线：小文件主要优化每文件固定成本，大文件主要减少无效 I/O。V2 通过避免 buffer 清零降低固定成本，这个优化是通用的，但对大量小文件尤其明显，基础 workload 提升约 3 倍；V4 通过 head+tail partial hash 过滤非重复大文件，相对稳定基线 V2 提升约 40 倍。V3 的大文件退化不是小文件 batch 思路的问题，而是 batch 策略误用于大文件，V4 已经通过大文件单独调度修复。
+
+---
+
+## 后续 Benchmark 建议
+
+| Benchmark | 目的 |
+| --- | --- |
+| `hardlink_heavy` | 验证 hardlink 折叠能减少 full hash 次数 |
+| `cold_cache_many_small` | 在真实磁盘冷缓存下验证 inode 排序 |
+| `partial_hash_false_positive` | 构造头尾相同但中间不同的大文件，评估 partial hash 假阳性 |
+| `large_file_batch_sweep` | 对大文件 batch size 做 1/2/4/8 对比，验证 Batch=1 是否最优 |
+| `buffer_size_sweep` | 对 64KiB/256KiB/1MiB/8MiB buffer 做对比 |
