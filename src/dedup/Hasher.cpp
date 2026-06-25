@@ -1,5 +1,6 @@
 #include "Hasher.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <fstream>
@@ -24,16 +25,23 @@ HashResult Hasher::hash_file(const FileInfo& file) const {
     // 2. 分配读取缓冲区，分块循环读取 (Chunked Reading)
     // 内存友好（OOM 防范）：采用了基于固定大小 Buffer 的分块读取策略。决不会因为大文件撑爆内存。
     Blake3Hash hash;
-    // 关键优化：使用 unique_ptr<char[]> 避免 std::vector 的 zero-initialization 开销。
-    // 为什么不把它变成类的成员变量来复用内存？
-    // 答：因为 hash_file() 是被 ThreadPool 并行调用的（const 方法）。
-    // 每个 worker 线程必须拥有自己独立的 buffer，以保证彻底的线程安全（Thread-safety）。
-    std::unique_ptr<char[]> buffer(new char[bufferSize_]);
+
+    const size_t actualBufferSize = std::min<size_t>(bufferSize_, file.size > 0 ? static_cast<size_t>(file.size) : 4096);
+    
+    // 关键优化：使用 thread_local 复用线程级缓冲。
+    // 这样既保证了多线程并发调用的安全性，又消除了频繁的内存分配。
+    // 注意：std::vector::resize 仅在容量不足时才会重新分配。
+    thread_local std::vector<char> tls_buffer;
+    if (tls_buffer.size() < actualBufferSize) {
+        tls_buffer.resize(actualBufferSize);
+    }
+    char* buffer = tls_buffer.data();
+
     while (input) {
-        input.read(buffer.get(), static_cast<std::streamsize>(bufferSize_));
+        input.read(buffer, static_cast<std::streamsize>(actualBufferSize));
         const std::streamsize bytesRead = input.gcount();
         if (bytesRead > 0) {
-            hash.update(buffer.get(), static_cast<size_t>(bytesRead)); // 将读到的数据块不断喂给哈希算法，更新 hash 状态
+            hash.update(buffer, static_cast<size_t>(bytesRead)); // 将读到的数据块不断喂给哈希算法，更新 hash 状态
         }
     }
 
@@ -53,17 +61,30 @@ HashResult Hasher::hash_partial_file(const FileInfo& file, size_t maxBytes) cons
     }
 
     Blake3Hash hash;
-    std::unique_ptr<char[]> buffer(new char[bufferSize_]);
+
+    size_t actualBufferSize = bufferSize_;
+    if (file.size <= maxBytes) {
+        actualBufferSize = std::min<size_t>(bufferSize_, file.size > 0 ? static_cast<size_t>(file.size) : 4096);
+    } else {
+        const size_t chunkSize = maxBytes / 2;
+        actualBufferSize = std::min<size_t>(bufferSize_, chunkSize > 0 ? chunkSize : 4096);
+    }
+    
+    thread_local std::vector<char> tls_buffer;
+    if (tls_buffer.size() < actualBufferSize) {
+        tls_buffer.resize(actualBufferSize);
+    }
+    char* buffer = tls_buffer.data();
     
     if (file.size <= maxBytes) {
         // 场景 A：文件不够大，从头读到尾（作为局部哈希）
         size_t totalRead = 0;
         while (input && totalRead < maxBytes) {
-            size_t toRead = std::min(bufferSize_, maxBytes - totalRead);
-            input.read(buffer.get(), static_cast<std::streamsize>(toRead));
+            size_t toRead = std::min(actualBufferSize, maxBytes - totalRead);
+            input.read(buffer, static_cast<std::streamsize>(toRead));
             const std::streamsize bytesRead = input.gcount();
             if (bytesRead > 0) {
-                hash.update(buffer.get(), static_cast<size_t>(bytesRead));
+                hash.update(buffer, static_cast<size_t>(bytesRead));
                 totalRead += bytesRead;
             }
         }
@@ -74,11 +95,11 @@ HashResult Hasher::hash_partial_file(const FileInfo& file, size_t maxBytes) cons
         // 1. 读取头部块
         size_t headRead = 0;
         while (input && headRead < chunkSize) {
-            size_t toRead = std::min(bufferSize_, chunkSize - headRead);
-            input.read(buffer.get(), static_cast<std::streamsize>(toRead));
+            size_t toRead = std::min(actualBufferSize, chunkSize - headRead);
+            input.read(buffer, static_cast<std::streamsize>(toRead));
             const std::streamsize bytesRead = input.gcount();
             if (bytesRead > 0) {
-                hash.update(buffer.get(), static_cast<size_t>(bytesRead));
+                hash.update(buffer, static_cast<size_t>(bytesRead));
                 headRead += bytesRead;
             }
         }
@@ -94,11 +115,11 @@ HashResult Hasher::hash_partial_file(const FileInfo& file, size_t maxBytes) cons
         // 3. 读取尾部块
         size_t tailRead = 0;
         while (input && tailRead < chunkSize) {
-            size_t toRead = std::min(bufferSize_, chunkSize - tailRead);
-            input.read(buffer.get(), static_cast<std::streamsize>(toRead));
+            size_t toRead = std::min(actualBufferSize, chunkSize - tailRead);
+            input.read(buffer, static_cast<std::streamsize>(toRead));
             const std::streamsize bytesRead = input.gcount();
             if (bytesRead > 0) {
-                hash.update(buffer.get(), static_cast<size_t>(bytesRead));
+                hash.update(buffer, static_cast<size_t>(bytesRead));
                 tailRead += bytesRead;
             }
         }
