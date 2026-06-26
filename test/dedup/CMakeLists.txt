@@ -6,21 +6,11 @@ file(GLOB_RECURSE DEDUP_TEST_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp
 )
 
-add_executable(dedupTests
-    ${DEDUP_TEST_SOURCES}
-    ${PROJECT_SOURCE_DIR}/src/dedup/DuplicateFinder.cpp
-    ${PROJECT_SOURCE_DIR}/src/dedup/FileWalker.cpp
-    ${PROJECT_SOURCE_DIR}/src/dedup/Hasher.cpp
-)
-
-target_include_directories(dedupTests PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/dedup
-)
+add_executable(dedupTests ${DEDUP_TEST_SOURCES})
 
 target_link_libraries(dedupTests PRIVATE
-    ThreadPool
+    dedup_lib
     GTest::gtest_main
-    blake3
 )
 
 include(GoogleTest)
