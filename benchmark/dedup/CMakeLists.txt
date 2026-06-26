@@ -35,3 +35,9 @@ target_link_libraries(dedupBenchmark PRIVATE
     benchmark::benchmark
     blake3
 )
+
+add_custom_target(compare_jdupes
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/compare_jdupes.sh $<TARGET_FILE:dedup>
+    DEPENDS dedup
+    COMMENT "Running system-level benchmark against jdupes..."
+)

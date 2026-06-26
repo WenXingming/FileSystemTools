@@ -2,6 +2,10 @@
 
 文件系统工具集合。当前包含 `dedup`：一个基于 `ThreadPool` 的并行文件去重命令行工具，用于递归扫描目录并输出重复文件组。
 
+>[!important]
+>
+>**性能最佳实践**：为了保护机械硬盘（HDD）免受多线程并发读取导致的“磁头抖动（Disk Thrashing）”惩罚，程序**默认使用单线程**安全运行。如果您正在使用现代固态硬盘（SSD/NVMe），强烈建议您通过 `--threads N`（例如 `--threads 8`）开启多线程以榨干 I/O 和 CPU 性能，这通常会带来数倍的速度飙升！
+
 `ThreadPool` 不再保留在本项目源码中，而是通过 CMake `FetchContent` 自动从 GitHub 仓库 (https://github.com/WenXingming/ThreadPool.git) 拉取。
 
 ## 构建与测试

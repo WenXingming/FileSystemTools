@@ -54,7 +54,7 @@ void print_report(const DuplicateReport& report, int threadCount) {
 int main(int argc, char* argv[]) {
     std::string directory;
     const unsigned int hardwareThreads = std::thread::hardware_concurrency();
-    int threadCount = hardwareThreads == 0 ? 2 : static_cast<int>(hardwareThreads);
+    int threadCount = 1; // Default to 1 thread to avoid disk thrashing on HDDs.
 
     CLI::App app{ "Duplicate File Finder" };
 
