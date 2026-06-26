@@ -10,3 +10,7 @@ benchmark/dedup/results/*
 
 # agent skills
 .agents/
+
+# assets
+assets/SHA256SUMS.txt
+assets/ubuntu-24.04.4-desktop-amd64.iso
