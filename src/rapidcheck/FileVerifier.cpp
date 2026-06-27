@@ -35,6 +35,10 @@ VerifyResult FileVerifier::calculateSha256(const std::string& filePath, Progress
         }
     }
 
+    if (file.bad()) {
+        throw std::runtime_error("Fatal I/O error while reading file " + filePath);
+    }
+
     VerifyResult result;
     result.hash = hasher.finalize();
     result.bytesRead = totalBytesRead;

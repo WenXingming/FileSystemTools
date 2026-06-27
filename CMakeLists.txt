@@ -60,4 +60,5 @@ endif()
 
 if(BUILD_BENCHMARKS)
     add_subdirectory(benchmark/dedup)
+    add_subdirectory(benchmark/rapidcheck)
 endif()

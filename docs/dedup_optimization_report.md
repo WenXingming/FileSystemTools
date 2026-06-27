@@ -1,6 +1,6 @@
 # dedup 性能优化与 Benchmark 报告
 
-本文档基于 [dedup_benchmark_record.md](dedup_benchmark_record.md) 中按 commit 重新运行的 Google Benchmark 结果，以及 [report.md](../report.md) 中的当前工作区补充实验，整理 `dedup` 文件去重工具的性能优化过程。
+本文档基于 [dedup_benchmark_record.md](dedup_benchmark_record.md) 中按 commit 重新运行的 Google Benchmark 结果，以及当前工作区补充实验，整理 `dedup` 文件去重工具的性能优化过程。
 
 这份报告重点不是罗列所有数字，而是把每一步优化讲清楚：
 
@@ -8,7 +8,7 @@
 - 怎么做这个优化（优化和实现思路）。
 - benchmark 结果是否支持这个优化。
 
-原始终端输出保留在 [dedup_benchmark_record.md](dedup_benchmark_record.md) 和 [report.md](../report.md)。本文只整理 `_mean` 结果，并以 8 线程结果作为主要讨论口径。
+历史版本的原始终端输出保留在 [dedup_benchmark_record.md](dedup_benchmark_record.md)。本文同时保留当前工作区补充实验的整理结果，只讨论 `_mean` 数据，并以 8 线程结果作为主要口径。
 
 ---
 
@@ -52,7 +52,7 @@
 | V3 小文件批量切片 | `b4fc4af268eef56030fe0845a1df7016aeb88648` | 2026-06-25T10:23:30+08:00 | 1.55, 3.09, 2.70 |
 | V4 大文件首尾哈希 | `4972c07ebd6e209486bebe4ba98a47c16ebf032c` | 2026-06-25T10:37:27+08:00 | 1.23, 1.35, 1.86 |
 | V5 硬链接折叠与 I/O 局部性 | `17d2aeac4c3495d26b64607c66bacaaa89a067e1` | 未单独 benchmark | - |
-| V6 Buffer right-sizing 与线程局部复用 | 当前工作区补充实验，见 [report.md](../report.md) | 2026-06-25T21:19:12+08:00 / 2026-06-25T22:18:16+08:00 | 1.28, 1.25, 1.08 / 2.78, 1.30, 1.16 |
+| V6 Buffer right-sizing 与线程局部复用 | 当前工作区补充实验 | 2026-06-25T21:19:12+08:00 / 2026-06-25T22:18:16+08:00 | 1.28, 1.25, 1.08 / 2.78, 1.30, 1.16 |
 
 每次运行均提示 CPU scaling enabled，所以本文关注趋势和数量级，不把小幅波动解释为确定结论。
 
