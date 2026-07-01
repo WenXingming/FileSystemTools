@@ -166,36 +166,7 @@ cmake --build build-bench
 
 ## 版本演进与结果
 
-### V1：多线程 full hash 基线
 
-#### 做了什么
-
-V1 已经有线程池，流程是：
-
-```text
-扫描 -> size 分组 -> size 冲突文件全部 full hash -> 按 (size, hash) 分组
-```
-
-它是“多线程 full hash 基线”，不是单线程基线。
-
-#### 全量结果
-
-单位：`Time mean`。
-
-| Workload | 1 线程 | 2 线程 | 4 线程 | 8 线程 | 1->8 加速 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `100_files_4KiB` | 9.92 ms | 6.27 ms | 3.65 ms | 2.41 ms | 4.12x |
-| `1000_files_4KiB` | 121 ms | 65.3 ms | 38.1 ms | 22.1 ms | 5.48x |
-| `10000_files_4KiB` | 1042 ms | 597 ms | 355 ms | 214 ms | 4.87x |
-| `1000_files_256KiB` | 852 ms | 437 ms | 227 ms | 123 ms | 6.93x |
-
-#### 解读
-
-V1 证明线程池方向是有效的。`1000_files_256KiB` 从 `852 ms` 降到 `123 ms`，接近 `6.93x`，说明读取文件时存在大量等待，多个线程可以重叠 I/O。
-
-但 V1 的策略仍然比较粗：只要 size 相同，就直接 full hash。大文件会产生无效 I/O，小文件会放大每个文件的固定成本。
-
----
 
 ### V2：Buffer 避免 zero-initialization
 
@@ -354,44 +325,6 @@ V4 的结果需要分三类解释。
 
 `mixed_realistic` 相比 V3 从 `1505 ms` 降到 `358 ms`，包含修复回归；相比 V2 从 `461 ms` 降到 `358 ms`，约 `1.29x`，这才是 V4 在混合场景里的真实净收益。
 
----
-
-### V5：硬链接折叠与 I/O 局部性
-
-#### 做了什么
-
-V5 引入 `device/inode` 元数据：
-
-```cpp
-struct FileInfo {
-    std::string path;
-    uint64_t size;
-    uint64_t device;
-    uint64_t inode;
-};
-```
-
-它支持两个优化：
-
-- 硬链接折叠：多个路径指向同一个 `(device, inode)` 时，只 hash 一次。
-- inode 排序：小文件按 `(device, inode)` 排序，尽量改善真实磁盘上的访问局部性。
-
-#### Benchmark 状态
-
-V5 本轮没有单独 benchmark。
-
-原因不是这个优化不重要，而是当前 benchmark 不适合验证它：
-
-- 数据集没有专门构造 hardlink，无法体现硬链接折叠收益。
-- benchmark 在 `/tmp` 生成数据，容易被 tmpfs 或 Page Cache 掩盖真实磁盘访问差异。
-- inode 排序更适合在冷缓存、真实磁盘、大量碎片小文件场景验证。
-
-后续应该新增：
-
-- `hardlink_heavy`：大量 hardlink，验证 full hash 次数减少。
-- `cold_cache_many_small`：真实磁盘冷缓存，验证 inode 排序效果。
-
----
 
 ### V6：Buffer right-sizing 与线程局部复用
 
