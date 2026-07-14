@@ -1,78 +1,71 @@
-# Dedup (FileSystemTools)
+# Dedup ⚡
 
-一个基于 `ThreadPool` 的高性能、多线程并行文件去重命令行工具，旨在高效递归扫描目录并找出重复文件组。针对现代固态硬盘（SSD/NVMe）的并发特性以及机械硬盘（HDD）的寻道惩罚，进行了针对性的 I/O 与并发调度优化。
+<p align="center">
+  <strong>一个基于 ThreadPool 的高性能、支持多线程并行的文件去重命令行工具</strong><br />
+  针对 SSD/NVMe 的并发优势与 HDD 的寻道惩罚，并为硬链接、大文件、小文件设计了多层过滤漏斗，在尽可能减少磁盘 I/O、降低磁盘压力的前提下极速找出重复文件。
+</p>
 
-[🚀 快速开始](#快速开始-) · [✨ 核心特性](#核心特性-) · [🧩 架构设计](#架构设计-) · [🛠️ 构建与测试](#构建与测试-) · [📊 性能基准](#性能基准-)
+<p align="center">
+  <img src="https://img.shields.io/badge/core-C%2B%2B11-00599C?style=flat-square" alt="C++11" />
+  <img src="https://img.shields.io/badge/build-CMake%203.16%2B-064F8C?style=flat-square" alt="CMake" />
+  <img src="https://img.shields.io/badge/library-dedup__lib-0A7F5A?style=flat-square" alt="dedup_lib" />
+  <img src="https://img.shields.io/badge/tests-GoogleTest-7B42BC?style=flat-square" alt="GoogleTest" />
+  <img src="https://img.shields.io/badge/benchmark-Google%20Benchmark-E91E63?style=flat-square" alt="Google Benchmark" />
+</p>
+
+<p align="center">
+  <a href="#核心特性">✨ 核心特性</a> ·
+  <a href="#快速开始">🚀 快速开始</a> ·
+  <a href="#构建与测试">🛠️ 构建与测试</a> ·
+  <a href="#性能基准">📊 性能基准</a> ·
+  <a href="#快速集成">🧩 快速集成</a>
+</p>
+
+## 核心特性 ✨
+
+* **🚀 极致并发设计**：底层接入轻量级 [ThreadPool](https://github.com/WenXingming/ThreadPool)。哈希计算与文件分块读取紧密流水线化，在大文件并发扫描场景下能够榨干多核 CPU 与 SSD 的并发读写性能。
+* **🛡️ Inode 硬链接折叠**：自动识别相同物理 Inode 的硬链接文件，对其进行折叠记录，避免同一文件被反复读取多次，天然免疫硬链接导致的 I/O 放大。
+* **⚡ Partial Hash 过滤漏斗**：对于大文件，首先计算头部和尾部少量数据（例如 64KB）的 Partial Hash 进行快速比对，仅在 Partial Hash 完全相同时，才对文件进行全盘 Full Hash 计算，避开 99% 的大文件全盘读取开销。
+* **🎯 高性能 BLAKE3 算法**：哈希模块采用非密码学安全但极速、且自带 AVX2/AVX512/SSE 等 SIMD 汇编优化的 BLAKE3 算法，保障吞吐速度的同时杜绝了哈希碰撞风险。
+* **🔌 纯净 C++11 构建**：不依赖任何复杂的第三方库（除 GTest 和 Google Benchmark 外部拉取外），且对其他 CMake 项目提供开箱即用的库链接支持。
 
 ---
 
 ## 快速开始 🚀
 
-### 1. 编译安装
+### 1. 编译构建
+
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-### 2. 基本使用
+### 2. 运行命令行去重
+
 ```bash
-# 默认单线程运行（保护 HDD 硬盘，避免磁头抖动）
+# 默认单线程运行（安全且保护 HDD 机械硬盘）
 ./build/src/dedup /path/to/directory
 
-# SSD 开启 8 线程并发扫描（极速榨干 I/O 与 CPU 性能）
+# 多线程并发运行（推荐在现代 SSD 上使用，通常开启 CPU 核数的线程）
 ./build/src/dedup /path/to/directory --threads 8
 ```
 
 > [!IMPORTANT]
-> **I/O 性能最佳实践**：
-> * **机械硬盘（HDD）**：请**不要**开启多线程（默认 `--threads 1`）。并发随机寻道会导致严重的“磁头抖动 (Disk Thrashing)”，使性能发生断崖式下跌。
-> * **固态硬盘（SSD/NVMe）**：建议根据 CPU 核心数开启多线程（例如 `--threads 8`），这能带来数倍甚至数十倍的读取与 Hash 计算吞吐速度！
-
----
-
-## 核心特性 ✨
-
-* **🚀 深度并发与 I/O 调度**：底层采用高性能通用线程池 `ThreadPool` 进行哈希分块并行计算，多线程读取与计算高度流水线化。
-* **🛡️ 零拷贝与硬链接折叠**：智能检测并合并相同物理 inode 的硬链接文件，避免不必要的重复哈希 I/O，并且通过引用传递消除多余数据拷贝。
-* **⚡ 大小文件分流漏斗**：
-  * **小文件**：采用极低的固定成本直接进行哈希。
-  * **大文件**：采用 **Partial Hash 漏斗机制**（首部 + 尾部快速哈希筛选），过滤不匹配项，仅在必要时计算 Full Hash，避免海量大文件全盘读取。
-* **🎯 密码学级哈希算法**：引入 BLAKE3 高性能哈希算法（通过汇编/SIMD指令集加速），既保证极高的哈希计算吞吐，又杜绝了哈希碰撞风险。
-* **🛠️ 优雅集成与 C++11 标准**：严格基于 C++11 标准，通过 CMake `FetchContent` 零依赖集成，轻量高效。
-
----
-
-## 架构设计 🧩
-
-`dedup` 的去重流程由一个精心设计的多层过滤漏斗组成，在尽可能减少磁盘 I/O 的前提下找出重复文件：
-
-```mermaid
-graph TD
-    A[FileWalker: 递归扫描目录] --> B[按文件大小 Size 分组]
-    B --> C{大小是否唯一?}
-    C -- 是 --> D[排除, 必然不重复]
-    C -- 否 --> E[硬链接合并: 相同 Inode 折叠]
-    E --> F[大小文件分流]
-    F -- 小文件 --> G[直接计算 Full Hash]
-    F -- 大文件 --> H[Partial Hash: 计算首尾部分数据]
-    H --> I{Partial Hash 是否相同?}
-    I -- 否 --> J[排除, 文件内容不同]
-    I -- 是 --> K[Full Hash 汇流: 计算完整文件哈希]
-    G --> L[DuplicateFinder: 聚合哈希结果]
-    K --> L
-    L --> M[输出重复文件组报告]
-```
+> **物理介质优化建议**：
+>
+> * **机械硬盘 (HDD)**：请使用默认的单线程模型（不要指定 `--threads` 或设置为 `1`）。多线程的并发随机读取可能会导致磁头剧烈寻道振荡（Disk Thrashing），性能反而可能会受损。
+> * **固态硬盘 (SSD/NVMe)**：强烈建议根据你的硬件情况开启并发线程（如 `--threads 8`），这能带来数倍的性能提升。
 
 ---
 
 ## 构建与测试 🛠️
 
 ```bash
-# 开启测试构建
+# 开启测试并构建
 cmake -S . -B build -DBUILD_TESTING=ON
 cmake --build build -j
 
-# 运行单元测试与 CLI 集成测试
+# 运行 GTest 单元测试及 CLI 综合集成测试
 ctest --test-dir build --output-on-failure
 ```
 
@@ -80,22 +73,46 @@ ctest --test-dir build --output-on-failure
 
 ## 性能基准 📊
 
-本工具内置了针对业界去重利器 `jdupes` 的系统级 Benchmark 脚本。
+我们编写了用于和业界知名去重工具 `jdupes` 进行宏观性能比对的 benchmark 脚本。详细比对数据和分析可参考：[开源方法对比：dedup_vs_jdupes](docs/开源方法对比：dedup_vs_jdupes.md)。
 
-### 1. 运行基准测试
+### 1. 编译 Benchmark 目标
+
 ```bash
-# 编译 benchmark 目标（推荐 Release 模式）
 cmake -S . -B build-bench -DBUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build-bench -j
+```
 
-# 运行微观 Benchmark
+### 2. 运行系统级对比测试 (需提前生成测试集)
+
+```bash
+# 生成 2.5 GB 混合测试集，并对比运行 jdupes 和 dedup 性能
+# 该脚本会自动下载、构建 jdupes 并输出直观的执行时间与内存 RSS 占用对比表格
+./build-bench/benchmark/compare_jdupes
+```
+
+### 3. 运行微观性能基准
+
+```bash
 ./build-bench/benchmark/dedupBenchmark --benchmark_min_time=1.0 --benchmark_repetitions=3
 ```
 
-### 2. 导出测试报告与对比
-你也可以运行系统自带的测试脚本，生成 2.5 GB 混合数据集自动测试：
-```bash
-mkdir -p benchmark/results
-./build-bench/benchmark/dedupBenchmark --benchmark_format=json --benchmark_out=benchmark/results/latest.json
+---
+
+## 快速集成 🧩
+
+你可以在你的 CMake 项目中，通过 `FetchContent` 极简引入 `dedup_lib` 作为一个去重组件库：
+
+```cmake
+include(FetchContent)
+
+FetchContent_Declare(
+    dedup
+    GIT_REPOSITORY https://github.com/WenXingming/FileSystemTools.git
+    GIT_TAG        develop # 生产环境建议指定具体 Commit 或 Release Tag
+    SOURCE_SUBDIR  src
+)
+FetchContent_MakeAvailable(dedup)
+
+# 链接到你的 Target 即可直接使用 DuplicateFinder, FileWalker 与 Hasher
+target_link_libraries(your_project PRIVATE dedup_lib)
 ```
-关于去重漏斗架构优化以及并发调优的详细分析，请参考 [docs/总览.md](docs/总览.md)。
