@@ -41,8 +41,7 @@ endif()
 
 include(CTest)
 
-add_subdirectory(src/dedup)
-add_subdirectory(src/rapidcheck)
+add_subdirectory(src)
 if(BUILD_TESTING)
     find_package(GTest QUIET)
     if(NOT GTest_FOUND)
@@ -54,11 +53,9 @@ if(BUILD_TESTING)
         FetchContent_MakeAvailable(googletest)
     endif()
 
-    add_subdirectory(test/dedup)
-    add_subdirectory(test/rapidcheck)
+    add_subdirectory(test)
 endif()
 
 if(BUILD_BENCHMARKS)
-    add_subdirectory(benchmark/dedup)
-    add_subdirectory(benchmark/rapidcheck)
+    add_subdirectory(benchmark)
 endif()

@@ -6,14 +6,10 @@ build/
 build-bench*/
 
 # benchmark results
-benchmark/dedup/results/*
+benchmark/results/*
 
 # agent skills
 .agents/
 
 # codex
 .codex/
-
-# assets
-assets/SHA256SUMS.txt
-assets/ubuntu-24.04.4-desktop-amd64.iso

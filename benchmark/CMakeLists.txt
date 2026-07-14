@@ -19,13 +19,13 @@ endif()
 
 add_executable(dedupBenchmark
     DedupBenchmark.cpp
-    ${PROJECT_SOURCE_DIR}/src/dedup/DuplicateFinder.cpp
-    ${PROJECT_SOURCE_DIR}/src/dedup/FileWalker.cpp
-    ${PROJECT_SOURCE_DIR}/src/dedup/Hasher.cpp
+    ${PROJECT_SOURCE_DIR}/src/DuplicateFinder.cpp
+    ${PROJECT_SOURCE_DIR}/src/FileWalker.cpp
+    ${PROJECT_SOURCE_DIR}/src/Hasher.cpp
 )
 
 target_include_directories(dedupBenchmark PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/dedup
+    ${PROJECT_SOURCE_DIR}/src
 )
 
 target_compile_features(dedupBenchmark PRIVATE cxx_std_17)
